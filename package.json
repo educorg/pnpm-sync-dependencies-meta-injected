@@ -2,6 +2,7 @@
   "private": true,
   "license": "MIT",
   "author": "NullVoxPopuli",
+  "name": "pnpm-sync-dependencies",
   "scripts": {
     "dev": "pnpm --filter 'tests' dev",
     "release": "changeset publish",
