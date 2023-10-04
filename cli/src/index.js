@@ -6,13 +6,12 @@ import { findWorkspacePackages } from '@pnpm/find-workspace-packages';
 import { hardLinkDir } from '@pnpm/fs.hard-link-dir';
 import { readExactProjectManifest } from '@pnpm/read-project-manifest';
 import Debug from 'debug';
-import { pathExists, remove } from 'fs-extra';
+import { pathExists, remove, ensureDir, copy, ensureLink } from 'fs-extra';
 import lockfile from 'proper-lockfile';
 import resolvePackageManifestPath from 'resolve-package-path';
 import Watcher from 'watcher';
 
 const debug = Debug('sync-pnpm');
-const DEBOUNCE_INTERVAL = 50;
 
 /**
  * @typedef {object} Options
@@ -99,41 +98,76 @@ async function sync(paths, isWatchMode) {
   debug('watch mode enabled');
 
   let fromPaths = Object.keys(paths);
-  let watcher = new Watcher(fromPaths);
-
-  /** @type {string[]} */
-  let dirtyPaths = [];
-
-  watcher.on('all', (_event, targetPath /*, targetPathNext*/) => {
-    dirtyPaths.push(targetPath);
+  let watcher = new Watcher(fromPaths, {
+    ignoreInitial: true,
+    recursive: true,
   });
 
-  async function handleDirtyPaths() {
-    if (dirtyPaths.length) {
-      /** @type {{ [fromPath: string]: boolean}} */
-      let foundFromPaths = {};
+  const getTargetPath = (sourcePath) => {
+    let path = fromPaths.find((p) => sourcePath.startsWith(p));
 
-      for (let dirtyPath of dirtyPaths) {
-        let path = fromPaths.find((p) => dirtyPath.startsWith(p));
-
-        if (path === undefined) {
-          debug(`path not under watched root ${dirtyPath}`);
-        } else {
-          foundFromPaths[path] = true;
-        }
-      }
-
-      dirtyPaths = [];
-
-      for (let foundFromPath of Object.keys(foundFromPaths)) {
-        await syncFolder(foundFromPath, paths[foundFromPath]);
-      }
+    if (path === undefined) {
+      debug(`path not under watched root ${dirtyPath}`);
+      return null;
+    } else {
+      return sourcePath.replace(path, paths[path]);
     }
+  };
 
-    setTimeout(handleDirtyPaths, DEBOUNCE_INTERVAL);
-  }
+  let actionPromise = Promise.resolve();
 
-  handleDirtyPaths();
+  watcher.on('addDir', async (sourcePath) => {
+    const targetPath = getTargetPath(sourcePath);
+    await actionPromise;
+    actionPromise = new Promise(async (res) => {
+      try {
+        debug(`create folder "${targetPath}"`);
+        await ensureDir(targetPath);
+      } finally {
+        res();
+      }
+    });
+    await actionPromise;
+  });
+  watcher.on('unlinkDir', async (sourcePath) => {
+    const targetPath = getTargetPath(sourcePath);
+    await actionPromise;
+    actionPromise = new Promise(async (res) => {
+      try {
+        debug(`unlink folder "${targetPath}"`);
+        await remove(targetPath);
+      } finally {
+        res();
+      }
+    });
+    await actionPromise;
+  });
+  watcher.on('add', async (sourcePath) => {
+    const targetPath = getTargetPath(sourcePath);
+    await actionPromise;
+    actionPromise = new Promise(async (res) => {
+      try {
+        debug(`link or copy file "${targetPath}"`);
+        await linkOrCopyFile(sourcePath, targetPath);
+      } finally {
+        res();
+      }
+    });
+    await actionPromise;
+  });
+  watcher.on('unlink', async (sourcePath) => {
+    const targetPath = getTargetPath(sourcePath);
+    await actionPromise;
+    actionPromise = new Promise(async (res) => {
+      try {
+        debug(`unlink file "${targetPath}"`);
+        await remove(targetPath);
+      } finally {
+        res();
+      }
+    });
+    await actionPromise;
+  });
 }
 
 /**
@@ -273,4 +307,27 @@ async function syncFolder(syncFrom, syncTo) {
   debug(`syncing from ${syncFrom} to ${syncTo}`);
   await hardLinkDir(syncFrom, [syncTo]);
   releaseLock();
+}
+
+async function linkOrCopyFile (srcFile, destFile) {
+  try {
+    await linkOrCopy(srcFile, destFile)
+  } catch (err) { // eslint-disable-line
+    if (err.code !== 'EEXIST') {
+      throw err
+    }
+  }
+}
+
+/*
+ * This function could be optimized because we don't really need to try linking again
+ * if linking failed once.
+ */
+async function linkOrCopy (srcFile, destFile) {
+  try {
+    await ensureLink(srcFile, destFile)
+  } catch (err) { // eslint-disable-line
+    if (err.code !== 'EXDEV') throw err
+    await copy(srcFile, destFile)
+  }
 }
