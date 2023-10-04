@@ -99,7 +99,9 @@ async function sync(paths, isWatchMode) {
   debug('watch mode enabled');
 
   let fromPaths = Object.keys(paths);
-  let watcher = new Watcher(fromPaths);
+  let watcher = new Watcher(fromPaths, {
+    recursive: true,
+  });
 
   /** @type {string[]} */
   let dirtyPaths = [];
@@ -266,7 +268,7 @@ async function syncFolder(syncFrom, syncTo) {
   }
 
   if (await pathExists(syncTo)) {
-    await remove(syncTo);
+    // await remove(syncTo);
     debug(`removed ${syncTo} before syncing`);
   }
 
